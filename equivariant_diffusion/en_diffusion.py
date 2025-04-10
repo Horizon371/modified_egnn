@@ -6,6 +6,11 @@ from egnn import models
 from torch.nn import functional as F
 from equivariant_diffusion import utils as diffusion_utils
 from tqdm import tqdm
+from tdc import Oracle
+from qm9.rdkit_functions import build_molecule, mol2smiles, compute_qm9_smiles
+from torch import log, sqrt, autograd
+from torch.autograd.functional import jacobian
+from torch.nn.functional import mse_loss
 
 # Defining some useful util functions.
 def expm1(x: torch.Tensor) -> torch.Tensor:
@@ -186,18 +191,18 @@ class PredefinedNoiseSchedule(torch.nn.Module):
             raise ValueError(noise_schedule)
 
         print('alphas2', alphas2)
+        self.alphas2 = alphas2
+        self.sigmas2 = 1 - alphas2
 
-        sigmas2 = 1 - alphas2
+        self.log_alphas2 = np.log(alphas2)
+        self.log_sigmas2 = np.log(self.sigmas2)
 
-        log_alphas2 = np.log(alphas2)
-        log_sigmas2 = np.log(sigmas2)
+        self.log_alphas2_to_sigmas2 = self.log_alphas2 - self.log_sigmas2
 
-        log_alphas2_to_sigmas2 = log_alphas2 - log_sigmas2
-
-        print('gamma', -log_alphas2_to_sigmas2)
+        print('gamma', -self.log_alphas2_to_sigmas2)
 
         self.gamma = torch.nn.Parameter(
-            torch.from_numpy(-log_alphas2_to_sigmas2).float(),
+            torch.from_numpy(-self.log_alphas2_to_sigmas2).float(),
             requires_grad=False)
 
     def forward(self, t):
@@ -472,7 +477,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         return degrees_of_freedom_x * (- log_sigma_x - 0.5 * np.log(2 * np.pi))
 
-    def sample_p_xh_given_z0(self, z0, node_mask, edge_mask, context, fix_noise=False):
+    def sample_p_xh_given_z0(self, z0, node_mask, edge_mask, context, fix_noise=False, dataset_info=None):
         """Samples x ~ p(x|z0)."""
         zeros = torch.zeros(size=(z0.size(0), 1), device=z0.device)
         gamma_0 = self.gamma(zeros)
@@ -711,7 +716,17 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         return neg_log_pxh
 
-    def sample_p_zs_given_zt(self, s, t, zt, node_mask, edge_mask, context, fix_noise=False):
+
+    def target_function(self, zs, node_mask, edge_mask, context, fix_noise, dataset_info):
+        x, h = self.sample_p_xh_given_z0(zs, node_mask, edge_mask, context, fix_noise=fix_noise)
+        smiles = build_molecule(x, h["integer"],dataset_info)
+        print(smiles)
+        return 2
+        # build_molecule(x, h)
+        # oracle = Oracle("JNK3", smiles)
+
+
+    def sample_p_zs_given_zt(self, s, t, zt, node_mask, edge_mask, context, fix_noise=False, dataset_info=None):
         """Samples from zs ~ p(zs | zt). Only used during sampling."""
         gamma_s = self.gamma(s)
         gamma_t = self.gamma(t)
@@ -736,6 +751,33 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
 
+        # target_result = self.target_function(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
+
+        # # guidance
+        # with torch.enable_grad():
+        #     zs = zs.requires_grad_()
+        #     result_sum = target_result.sum()
+        #     energy = 1 * result_sum
+        #     grad = autograd.grad(energy, zs)[0]
+
+        # max_norm = 10
+        # grad_norm = grad.norm(dim=[1, 2])
+        # clip_coef = max_norm / (grad_norm + 1e-6)
+        # clip_coef_clamped = torch.clamp(clip_coef, max=1.0)
+        # grad *= clip_coef_clamped[:, None, None]
+
+        # grad = torch.cat(
+        #     [
+        #         diffusion_utils.remove_mean_with_mask(
+        #             grad[:, :, : self.n_dims], node_mask
+        #         ),
+        #         grad[:, :, self.n_dims :],
+        #     ],
+        #     dim=2,
+        # )
+        # zs = zs - sigma * grad
+
+
         # Project down to avoid numerical runaway of the center of gravity.
         zs = torch.cat(
             [diffusion_utils.remove_mean_with_mask(zs[:, :, :self.n_dims],
@@ -758,7 +800,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         return z
 
     @torch.no_grad()
-    def sample(self, n_samples, n_nodes, node_mask, edge_mask, context, fix_noise=False):
+    def sample(self, n_samples, n_nodes, node_mask, edge_mask, context, fix_noise=False, dataset_info = None):
         """
         Draw samples from the generative model.
         """
@@ -777,7 +819,7 @@ class EnVariationalDiffusion(torch.nn.Module):
                 t_array = s_array + 1
                 s_array = s_array / self.T
                 t_array = t_array / self.T
-                z = self.sample_p_zs_given_zt(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise)
+                z = self.sample_p_zs_given_zt(s_array, t_array, z, node_mask, edge_mask, context, fix_noise=fix_noise, dataset_info=dataset_info)
                 pbar.update(1)
 
 
@@ -790,7 +832,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         if max_cog > 5e-2:
             print(f'Warning cog drift with error {max_cog:.3f}. Projecting '
                   f'the positions down.')
-            x = diffusion_utils.remove_mean_with_mask(x, node_mask)
+            x = diffusion_utils.remove_mean_with_mask(x, node_mask) 
 
         return x, h
 

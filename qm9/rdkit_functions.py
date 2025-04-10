@@ -141,6 +141,23 @@ def mol2smiles(mol):
     return Chem.MolToSmiles(mol)
 
 
+def build_molecule_from_coordinates_and_onehot(positions, atom_types, dataset_info):
+    atom_decoder = dataset_info["atom_decoder"]
+    X, A, E = build_xae_molecule(positions, atom_types, dataset_info)
+    mol = Chem.RWMol()
+    for atom in X:
+        a = Chem.Atom(atom_decoder[atom.item()])
+        mol.AddAtom(a)
+
+    all_bonds = torch.nonzero(A)
+    for bond in all_bonds:
+        mol.AddBond(bond[0].item(), bond[1].item(), bond_dict[E[bond[0], bond[1]].item()])
+    return mol
+
+def build_XAE_molecule_from_3D_coord():
+    pass
+
+
 def build_molecule(positions, atom_types, dataset_info):
     atom_decoder = dataset_info["atom_decoder"]
     X, A, E = build_xae_molecule(positions, atom_types, dataset_info)
@@ -153,6 +170,8 @@ def build_molecule(positions, atom_types, dataset_info):
     for bond in all_bonds:
         mol.AddBond(bond[0].item(), bond[1].item(), bond_dict[E[bond[0], bond[1]].item()])
     return mol
+
+
 
 
 def build_xae_molecule(positions, atom_types, dataset_info):
