@@ -7,10 +7,12 @@ from torch.nn import functional as F
 from equivariant_diffusion import utils as diffusion_utils
 from tqdm import tqdm
 from tdc import Oracle
-from qm9.rdkit_functions import build_molecule, mol2smiles, compute_qm9_smiles
+from qm9.rdkit_functions import build_molecule, mol2smiles, compute_qm9_smiles, build_molecule_from_coordinates_and_onehot
 from torch import log, sqrt, autograd
 from torch.autograd.functional import jacobian
 from torch.nn.functional import mse_loss
+from rdkit import Chem
+import torch.nn as nn
 
 # Defining some useful util functions.
 def expm1(x: torch.Tensor) -> torch.Tensor:
@@ -719,11 +721,14 @@ class EnVariationalDiffusion(torch.nn.Module):
 
     def target_function(self, zs, node_mask, edge_mask, context, fix_noise, dataset_info):
         x, h = self.sample_p_xh_given_z0(zs, node_mask, edge_mask, context, fix_noise=fix_noise)
-        smiles = build_molecule(x, h["integer"],dataset_info)
-        print(smiles)
-        return 2
-        # build_molecule(x, h)
-        # oracle = Oracle("JNK3", smiles)
+        oracle = Oracle("DRD2")
+        results = []
+        for (p, one_hot) in zip(x, h["categorical"]):
+            mol = build_molecule_from_coordinates_and_onehot(p, one_hot,dataset_info)
+            smiles =  Chem.MolToSmiles(mol)
+            results.append(oracle([smiles]))
+        return torch.tensor(results, requires_grad=True).flatten()
+
 
 
     def sample_p_zs_given_zt(self, s, t, zt, node_mask, edge_mask, context, fix_noise=False, dataset_info=None):
@@ -738,7 +743,9 @@ class EnVariationalDiffusion(torch.nn.Module):
         sigma_t = self.sigma(gamma_t, target_tensor=zt)
 
         # Neural net prediction.
-        eps_t = self.phi(zt, t, node_mask, edge_mask, context)
+        with torch.no_grad():
+            eps_t = self.phi(zt, t, node_mask, edge_mask, context=None)
+            eps_t = eps_t.nan_to_num(0.)
 
         # Compute mu for p(zs | zt).
         diffusion_utils.assert_mean_zero_with_mask(zt[:, :, :self.n_dims], node_mask)
@@ -751,31 +758,34 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
 
-        # target_result = self.target_function(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
+        mse_loss = nn.MSELoss()
+        target = torch.tensor([1.])
 
-        # # guidance
-        # with torch.enable_grad():
-        #     zs = zs.requires_grad_()
-        #     result_sum = target_result.sum()
-        #     energy = 1 * result_sum
-        #     grad = autograd.grad(energy, zs)[0]
+        # guidance
+        with torch.enable_grad():
+            zs = zs.requires_grad_()
+            prediction = self.target_function(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
+            pred = torch.mean(prediction)
+            loss = mse_loss(pred, target)
+            grad = autograd.grad(loss, zs, allow_unused=True)
+            grad = grad[0]
+    
+        max_norm = 10
+        grad_norm = grad.norm(dim=[1, 2])
+        clip_coef = max_norm / (grad_norm + 1e-6)
+        clip_coef_clamped = torch.clamp(clip_coef, max=1.0)
+        grad *= clip_coef_clamped[:, None, None]
 
-        # max_norm = 10
-        # grad_norm = grad.norm(dim=[1, 2])
-        # clip_coef = max_norm / (grad_norm + 1e-6)
-        # clip_coef_clamped = torch.clamp(clip_coef, max=1.0)
-        # grad *= clip_coef_clamped[:, None, None]
-
-        # grad = torch.cat(
-        #     [
-        #         diffusion_utils.remove_mean_with_mask(
-        #             grad[:, :, : self.n_dims], node_mask
-        #         ),
-        #         grad[:, :, self.n_dims :],
-        #     ],
-        #     dim=2,
-        # )
-        # zs = zs - sigma * grad
+        grad = torch.cat(
+            [
+                diffusion_utils.remove_mean_with_mask(
+                    grad[:, :, : self.n_dims], node_mask
+                ),
+                grad[:, :, self.n_dims :],
+            ],
+            dim=2,
+        )
+        zs = zs - sigma * grad
 
 
         # Project down to avoid numerical runaway of the center of gravity.
@@ -784,8 +794,11 @@ class EnVariationalDiffusion(torch.nn.Module):
                                                    node_mask),
              zs[:, :, self.n_dims:]], dim=2
         )
-        return zs
 
+        if torch.isnan(zs).any():
+            zs = zs.nan_to_num(0.)
+        return zs
+    
     def sample_combined_position_feature_noise(self, n_samples, n_nodes, node_mask):
         """
         Samples mean-centered normal noise for z_x, and standard normal noise for z_h.

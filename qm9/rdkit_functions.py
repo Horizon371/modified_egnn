@@ -141,9 +141,10 @@ def mol2smiles(mol):
     return Chem.MolToSmiles(mol)
 
 
-def build_molecule_from_coordinates_and_onehot(positions, atom_types, dataset_info):
+def build_molecule_from_coordinates_and_onehot(positions, one_hot, dataset_info):
     atom_decoder = dataset_info["atom_decoder"]
-    X, A, E = build_xae_molecule(positions, atom_types, dataset_info)
+    atom_types = torch.argmax(one_hot, dim=1).cpu().numpy()
+    X, A, E = build_XAE_molecule_from_3D_coord(positions, atom_types, dataset_info)
     mol = Chem.RWMol()
     for atom in X:
         a = Chem.Atom(atom_decoder[atom.item()])
@@ -154,8 +155,28 @@ def build_molecule_from_coordinates_and_onehot(positions, atom_types, dataset_in
         mol.AddBond(bond[0].item(), bond[1].item(), bond_dict[E[bond[0], bond[1]].item()])
     return mol
 
-def build_XAE_molecule_from_3D_coord():
-    pass
+def build_XAE_molecule_from_3D_coord(positions, atom_types, dataset_info):
+    atom_decoder = dataset_info['atom_decoder']
+    n = positions.shape[0]
+    X = atom_types
+    A = torch.zeros((n, n), dtype=torch.bool)
+    E = torch.zeros((n, n), dtype=torch.int)
+
+    pos = positions.unsqueeze(0)
+    dists = torch.cdist(pos, pos, p=2).squeeze(0)
+    for i in range(n):
+        for j in range(i):
+            pair = sorted([atom_types[i], atom_types[j]])
+            if dataset_info['name'] == 'qm9' or dataset_info['name'] == 'qm9_second_half' or dataset_info['name'] == 'qm9_first_half':
+                order = get_bond_order(atom_decoder[pair[0]], atom_decoder[pair[1]], dists[i, j])
+            elif dataset_info['name'] == 'geom':
+                order = geom_predictor((atom_decoder[pair[0]], atom_decoder[pair[1]]), dists[i, j], limit_bonds_to_one=True)
+            # TODO: a batched version of get_bond_order to avoid the for loop
+            if order > 0:
+                # Warning: the graph should be DIRECTED
+                A[i, j] = 1
+                E[i, j] = order
+    return X, A, E
 
 
 def build_molecule(positions, atom_types, dataset_info):
@@ -170,7 +191,6 @@ def build_molecule(positions, atom_types, dataset_info):
     for bond in all_bonds:
         mol.AddBond(bond[0].item(), bond[1].item(), bond_dict[E[bond[0], bond[1]].item()])
     return mol
-
 
 
 
