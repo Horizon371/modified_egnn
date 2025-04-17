@@ -718,18 +718,52 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         return neg_log_pxh
 
-
-    def target_function(self, zs, node_mask, edge_mask, context, fix_noise, dataset_info):
+    def decode(self, zs, node_mask, edge_mask, context, fix_noise=False, dataset_info=None):
         x, h = self.sample_p_xh_given_z0(zs, node_mask, edge_mask, context, fix_noise=fix_noise)
-        oracle = Oracle("DRD2")
-        results = []
+        molecules = []
         for (p, one_hot) in zip(x, h["categorical"]):
             mol = build_molecule_from_coordinates_and_onehot(p, one_hot,dataset_info)
-            smiles =  Chem.MolToSmiles(mol)
-            results.append(oracle([smiles]))
+            molecules.append(Chem.MolToSmiles(mol))
+        return molecules
+
+    def target_function(self, zs, node_mask, edge_mask, context, fix_noise, dataset_info):
+        molecules = self.decode(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
+        oracle = Oracle("DRD2")
+        results = []
+        print(molecules[0])
+        for molecule in molecules:
+            results.append(oracle([molecule]))
         return torch.tensor(results, requires_grad=True).flatten()
 
+    def finite_difference_update_with_target_function(self, zs, node_mask, edge_mask, context, 
+                                                    fix_noise, dataset_info, epsilon=1e-4, lr=1e-2):
+        """
+        Update `zs` using finite differences (gradient estimation) with the `target_function` 
+        for computing rewards.
+        
+        Args:
+            zs (Tensor): Current latent `z_T`, shape (B, N, D)
+            target_function (function): Function for generating predictions
+            epsilon (float): Perturbation size for finite difference approximation
+            lr (float): Learning rate for updating `zs`
+        
+        Returns:
+            zs (Tensor): Updated `zs` tensor
+        """
+        # Ensure zs doesn't require gradients (no autograd)
+        zs = zs.detach()
 
+        # Perturb zs to estimate gradients
+        reward_plus = self.target_function(zs + epsilon, node_mask, edge_mask, context, fix_noise, dataset_info)
+        reward_minus = self.target_function(zs - epsilon, node_mask, edge_mask, context, fix_noise, dataset_info)
+        print(reward_plus)
+        grad_est = (reward_plus - reward_minus) / (2 * epsilon)
+        grad_est_expanded = grad_est.unsqueeze(1).unsqueeze(2)  # (20, 1, 1)
+        grad_est_expanded = grad_est_expanded.expand(-1, 29, zs.shape[2]) # (20, 29, 1) 
+
+        zs = zs + lr * grad_est_expanded.to(zs.device)
+
+        return zs
 
     def sample_p_zs_given_zt(self, s, t, zt, node_mask, edge_mask, context, fix_noise=False, dataset_info=None):
         """Samples from zs ~ p(zs | zt). Only used during sampling."""
@@ -758,45 +792,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
 
-        mse_loss = nn.MSELoss()
-        target = torch.tensor([1.])
-
-        # guidance
-        with torch.enable_grad():
-            zs = zs.requires_grad_()
-            prediction = self.target_function(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
-            pred = torch.mean(prediction)
-            loss = mse_loss(pred, target)
-            grad = autograd.grad(loss, zs, allow_unused=True)
-            grad = grad[0]
-    
-        max_norm = 10
-        grad_norm = grad.norm(dim=[1, 2])
-        clip_coef = max_norm / (grad_norm + 1e-6)
-        clip_coef_clamped = torch.clamp(clip_coef, max=1.0)
-        grad *= clip_coef_clamped[:, None, None]
-
-        grad = torch.cat(
-            [
-                diffusion_utils.remove_mean_with_mask(
-                    grad[:, :, : self.n_dims], node_mask
-                ),
-                grad[:, :, self.n_dims :],
-            ],
-            dim=2,
-        )
-        zs = zs - sigma * grad
-
-
-        # Project down to avoid numerical runaway of the center of gravity.
-        zs = torch.cat(
-            [diffusion_utils.remove_mean_with_mask(zs[:, :, :self.n_dims],
-                                                   node_mask),
-             zs[:, :, self.n_dims:]], dim=2
-        )
-
-        if torch.isnan(zs).any():
-            zs = zs.nan_to_num(0.)
+        zs = self.finite_difference_update_with_target_function(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
         return zs
     
     def sample_combined_position_feature_noise(self, n_samples, n_nodes, node_mask):

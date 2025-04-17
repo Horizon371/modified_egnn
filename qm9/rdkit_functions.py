@@ -1,4 +1,4 @@
-from rdkit import Chem
+from rdkit import Chem, RDLogger
 import numpy as np
 from qm9.bond_analyze import get_bond_order, geom_predictor
 from . import dataset
@@ -142,6 +142,8 @@ def mol2smiles(mol):
 
 
 def build_molecule_from_coordinates_and_onehot(positions, one_hot, dataset_info):
+    RDLogger.DisableLog('rdApp.*')
+
     atom_decoder = dataset_info["atom_decoder"]
     atom_types = torch.argmax(one_hot, dim=1).cpu().numpy()
     X, A, E = build_XAE_molecule_from_3D_coord(positions, atom_types, dataset_info)
