@@ -726,17 +726,17 @@ class EnVariationalDiffusion(torch.nn.Module):
             molecules.append(Chem.MolToSmiles(mol))
         return molecules
 
-    def target_function(self, zs, node_mask, edge_mask, context, fix_noise, dataset_info):
+    def target_function(self, zs, node_mask, edge_mask, context, fix_noise, dataset_info, t):
         molecules = self.decode(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
         oracle = Oracle("DRD2")
         results = []
-        print(molecules[0])
+        if t%10 == 0: print(molecules[0])
         for molecule in molecules:
             results.append(oracle([molecule]))
-        return torch.tensor(results, requires_grad=True).flatten()
+        return torch.tensor(results, requires_grad=True).flatten().to(zs.device)
 
     def finite_difference_update_with_target_function(self, zs, node_mask, edge_mask, context, 
-                                                    fix_noise, dataset_info, epsilon=1e-4, lr=1e-2):
+                                                    fix_noise, dataset_info, epsilon=1e-4, lr=1e-2, t=0):
         """
         Update `zs` using finite differences (gradient estimation) with the `target_function` 
         for computing rewards.
@@ -752,11 +752,13 @@ class EnVariationalDiffusion(torch.nn.Module):
         """
         # Ensure zs doesn't require gradients (no autograd)
         zs = zs.detach()
-
-        # Perturb zs to estimate gradients
-        reward_plus = self.target_function(zs + epsilon, node_mask, edge_mask, context, fix_noise, dataset_info)
-        reward_minus = self.target_function(zs - epsilon, node_mask, edge_mask, context, fix_noise, dataset_info)
-        print(reward_plus)
+        # Perturb zs to estimate gradient
+        print(t)
+        print(zs.shape)
+        print(epsilon)
+        reward_plus = self.target_function(zs + epsilon, node_mask, edge_mask, context, fix_noise, dataset_info, t)
+        reward_minus = self.target_function(zs - epsilon, node_mask, edge_mask, context, fix_noise, dataset_info, t)
+        if t%10 == 0: print(reward_plus)
         grad_est = (reward_plus - reward_minus) / (2 * epsilon)
         grad_est_expanded = grad_est.unsqueeze(1).unsqueeze(2)  # (20, 1, 1)
         grad_est_expanded = grad_est_expanded.expand(-1, 29, zs.shape[2]) # (20, 29, 1) 
@@ -792,7 +794,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         # Sample zs given the paramters derived from zt.
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
 
-        zs = self.finite_difference_update_with_target_function(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
+        zs = self.finite_difference_update_with_target_function(zs, node_mask, edge_mask, context, fix_noise, dataset_info, t)
         return zs
     
     def sample_combined_position_feature_noise(self, n_samples, n_nodes, node_mask):
