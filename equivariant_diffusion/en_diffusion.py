@@ -758,6 +758,9 @@ class EnVariationalDiffusion(torch.nn.Module):
         zs = zs.detach()
         # Perturb zs to estimate gradient
 
+        global counter
+        counter += 1
+
         molecules = self.decode(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
 
         if counter % 100 == 0:
@@ -766,8 +769,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         reward_plus = self.target_function(zs + epsilon, node_mask, edge_mask, context, fix_noise, dataset_info, t)
         reward_minus = self.target_function(zs - epsilon, node_mask, edge_mask, context, fix_noise, dataset_info, t)
 
-        global counter
-        counter += 1
+ 
         if counter % 100 == 0:
             print(f"Reward plus: {reward_plus.mean().item()}, Reward minus: {reward_minus.mean().item()}")
 
