@@ -735,15 +735,12 @@ class EnVariationalDiffusion(torch.nn.Module):
         oracle = Oracle("DRD2")
         results = []
         
-        if counter % 100 == 0:
-            print(molecules[0])
-
         for molecule in molecules:
             results.append(oracle([molecule]))
         return torch.tensor(results, requires_grad=True).flatten().to(zs.device)
 
     def finite_difference_update_with_target_function(self, zs, node_mask, edge_mask, context, 
-                                                    fix_noise, dataset_info, t=0, epsilon=1e-4, lr=1e-2):
+                                                    fix_noise, dataset_info, t=0, epsilon=1e-3, lr=1e-2):
         """
         Update `zs` using finite differences (gradient estimation) with the `target_function` 
         for computing rewards.
@@ -761,9 +758,14 @@ class EnVariationalDiffusion(torch.nn.Module):
         zs = zs.detach()
         # Perturb zs to estimate gradient
 
-        reward_plus = self.target_function(zs, node_mask, edge_mask, context, fix_noise, dataset_info, t)
+        molecules = self.decode(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
+
+        if counter % 100 == 0:
+            print(molecules[0])
+
+        reward_plus = self.target_function(zs + epsilon, node_mask, edge_mask, context, fix_noise, dataset_info, t)
         reward_minus = self.target_function(zs - epsilon, node_mask, edge_mask, context, fix_noise, dataset_info, t)
-        
+
         global counter
         counter += 1
         if counter % 100 == 0:
