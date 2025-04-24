@@ -6,7 +6,9 @@ import torch
 from configs.datasets_config import get_dataset_info
 import pickle
 import os
-
+from rdkit import rdBase
+import sys
+import contextlib
 
 def compute_qm9_smiles(dataset_name, remove_h):
     '''
@@ -140,13 +142,15 @@ def mol2smiles(mol):
         return None
     return Chem.MolToSmiles(mol)
 
-
 def build_molecule_from_coordinates_and_onehot(positions, one_hot, dataset_info):
     RDLogger.DisableLog('rdApp.*')
+    rdBase.DisableLog('rdApp.info')
+
 
     atom_decoder = dataset_info["atom_decoder"]
     atom_types = torch.argmax(one_hot, dim=1).cpu().numpy()
     X, A, E = build_XAE_molecule_from_3D_coord(positions, atom_types, dataset_info)
+
     mol = Chem.RWMol()
     for atom in X:
         a = Chem.Atom(atom_decoder[atom.item()])
@@ -163,9 +167,9 @@ def build_XAE_molecule_from_3D_coord(positions, atom_types, dataset_info):
     X = atom_types
     A = torch.zeros((n, n), dtype=torch.bool)
     E = torch.zeros((n, n), dtype=torch.int)
-
     pos = positions.unsqueeze(0)
     dists = torch.cdist(pos, pos, p=2).squeeze(0)
+
     for i in range(n):
         for j in range(i):
             pair = sorted([atom_types[i], atom_types[j]])
@@ -178,6 +182,7 @@ def build_XAE_molecule_from_3D_coord(positions, atom_types, dataset_info):
                 # Warning: the graph should be DIRECTED
                 A[i, j] = 1
                 E[i, j] = order
+                
     return X, A, E
 
 

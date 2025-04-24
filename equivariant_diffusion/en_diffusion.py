@@ -13,10 +13,22 @@ from torch.autograd.functional import jacobian
 from torch.nn.functional import mse_loss
 from rdkit import Chem
 import torch.nn as nn
-
+import sys
+import os
+import contextlib
+from functools import wraps
+from contextlib import contextmanager,redirect_stderr,redirect_stdout
+from os import devnull
 
 counter = 0
 
+
+@contextmanager
+def suppress_stdout_stderr():
+    """A context manager that redirects stdout and stderr to devnull"""
+    with open(devnull, 'w') as fnull:
+        with redirect_stderr(fnull) as err, redirect_stdout(fnull) as out:
+            yield (err, out)
 
 # Defining some useful util functions.
 def expm1(x: torch.Tensor) -> torch.Tensor:
@@ -724,20 +736,22 @@ class EnVariationalDiffusion(torch.nn.Module):
 
     def decode(self, zs, node_mask, edge_mask, context, fix_noise=False, dataset_info=None):
         x, h = self.sample_p_xh_given_z0(zs, node_mask, edge_mask, context, fix_noise=fix_noise)
-        molecules = []
+        molecules = []  
+
         for (p, one_hot) in zip(x, h["categorical"]):
             mol = build_molecule_from_coordinates_and_onehot(p, one_hot,dataset_info)
             molecules.append(Chem.MolToSmiles(mol))
+
         return molecules
 
     def target_function(self, zs, node_mask, edge_mask, context, fix_noise, dataset_info, t):
-        molecules = self.decode(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
-        oracle = Oracle("DRD2")
-        results = []
-        
-        for molecule in molecules:
-            results.append(oracle([molecule]))
-        return torch.tensor(results, requires_grad=True).flatten().to(zs.device)
+        with suppress_stdout_stderr():
+            molecules = self.decode(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
+            oracle = Oracle("DRD2")
+            results = []
+            for molecule in molecules:
+                results.append(oracle([molecule]))
+            return torch.tensor(results, requires_grad=True).flatten().to(zs.device)
 
     def finite_difference_update_with_target_function(self, zs, node_mask, edge_mask, context, 
                                                     fix_noise, dataset_info, t=0, epsilon=1e-3, lr=1e-2):
