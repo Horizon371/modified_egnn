@@ -769,7 +769,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             zs (Tensor): Updated `zs` tensor
         """
         # Ensure zs doesn't require gradients (no autograd)
-        zs = zs.detach()
+        #zs = zs.detach()
         # Perturb zs to estimate gradient
 
         global counter
@@ -823,6 +823,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         zs = self.sample_normal(mu, sigma, node_mask, fix_noise)
 
         zs = self.finite_difference_update_with_target_function(zs, node_mask, edge_mask, context, fix_noise, dataset_info, t)
+
         return zs
     
     def sample_combined_position_feature_noise(self, n_samples, n_nodes, node_mask):
