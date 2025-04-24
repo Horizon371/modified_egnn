@@ -769,7 +769,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             zs (Tensor): Updated `zs` tensor
         """
         # Ensure zs doesn't require gradients (no autograd)
-        #zs = zs.detach()
+        zs = zs.detach()
         # Perturb zs to estimate gradient
 
         global counter
@@ -793,6 +793,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         zs = zs + lr * grad_est_expanded.to(zs.device)
 
+        zs.requires_grad = True  # Re-enable gradients for zs
         return zs
 
     def sample_p_zs_given_zt(self, s, t, zt, node_mask, edge_mask, context, fix_noise=False, dataset_info=None):
