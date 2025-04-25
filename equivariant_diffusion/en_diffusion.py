@@ -736,10 +736,13 @@ class EnVariationalDiffusion(torch.nn.Module):
 
     def decode(self, zs, node_mask, edge_mask, context, fix_noise=False, dataset_info=None):
         x, h = self.sample_p_xh_given_z0(zs, node_mask, edge_mask, context, fix_noise=fix_noise)
+
         molecules = []  
+        print("Positions: ", x.shape)
+        print("Atoms: ", h["categorical"].shape)
 
         for (p, one_hot) in zip(x, h["categorical"]):
-            mol = build_molecule_from_coordinates_and_onehot(p, one_hot,dataset_info)
+            mol = build_molecule_from_coordinates_and_onehot(x[0], h["categorical"][0],dataset_info)
             molecules.append(Chem.MolToSmiles(mol))
 
         return molecules
@@ -751,41 +754,28 @@ class EnVariationalDiffusion(torch.nn.Module):
             results = []
             for molecule in molecules:
                 results.append(oracle([molecule]))
-            return torch.tensor(results, requires_grad=True).flatten().to(zs.device)
+            return torch.tensor(results).flatten().to(zs.device)
 
     def finite_difference_update_with_target_function(self, zs, node_mask, edge_mask, context, 
                                                     fix_noise, dataset_info, t=0, epsilon=1e-3, lr=1e-2):
         """
         Update `zs` using finite differences (gradient estimation) with the `target_function` 
         for computing rewards.
-        
-        Args:
-            zs (Tensor): Current latent `z_T`, shape (B, N, D)
-            target_function (function): Function for generating predictions
-            epsilon (float): Perturbation size for finite difference approximation
-            lr (float): Learning rate for updating `zs`
-        
-        Returns:
-            zs (Tensor): Updated `zs` tensor
         """
+
         # Ensure zs doesn't require gradients (no autograd)
         zs = zs.detach()
+
         # Perturb zs to estimate gradient
-
-        global counter
-        counter += 1
-
-        molecules = self.decode(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
-
-        if counter % 100 == 0:
-            print(molecules[0])
-
         reward_plus = self.target_function(zs + epsilon, node_mask, edge_mask, context, fix_noise, dataset_info, t)
         reward_minus = self.target_function(zs - epsilon, node_mask, edge_mask, context, fix_noise, dataset_info, t)
 
- 
-        if counter % 100 == 0:
-            print(f"Reward plus: {reward_plus.mean().item()}, Reward minus: {reward_minus.mean().item()}")
+        # global counter
+        # counter += 1
+        # if counter % 100 == 0:
+        #     print(f"Reward plus: {reward_plus.mean().item()}, Reward minus: {reward_minus.mean().item()}")
+        #     molecules = self.decode(zs, node_mask, edge_mask, context, fix_noise, dataset_info)
+        #     print(molecules[0])
 
         grad_est = (reward_plus - reward_minus) / (2 * epsilon)
         grad_est_expanded = grad_est.unsqueeze(1).unsqueeze(2)  # (20, 1, 1)
@@ -793,7 +783,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         zs = zs + lr * grad_est_expanded.to(zs.device)
 
-        zs.requires_grad = True  # Re-enable gradients for zs
+        zs.requires_grad = True
         return zs
 
     def sample_p_zs_given_zt(self, s, t, zt, node_mask, edge_mask, context, fix_noise=False, dataset_info=None):
